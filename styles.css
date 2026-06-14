@@ -301,6 +301,10 @@ body.sync-embeds-no-focus-highlight .sync-embed:focus-within {
   outline-color: transparent;
 }
 
+body.sync-embeds-hide-linked-mentions .sync-embed .embedded-backlinks {
+  display: none !important;
+}
+
 /* === SCROLLBAR === */
 .sync-embed::-webkit-scrollbar {
   width: 8px;

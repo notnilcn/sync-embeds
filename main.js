@@ -1311,6 +1311,10 @@ var require_settings = __commonJS({
           this.plugin.settings.showFocusHighlight = value;
           await this.plugin.saveSettings();
         }));
+        new Setting(containerEl).setName("Hide linked mentions").setDesc("Hide the linked mentions panel that appears at the bottom of embedded notes").addToggle((toggle) => toggle.setValue(this.plugin.settings.hideLinkedMentions).onChange(async (value) => {
+          this.plugin.settings.hideLinkedMentions = value;
+          await this.plugin.saveSettings();
+        }));
         containerEl.createEl("h3", { text: "Header Management" });
         new Setting(containerEl).setName("Show header hints").setDesc("Display helpful notices when header creation is blocked in section embeds").addToggle((toggle) => toggle.setValue(this.plugin.settings.showHeaderHints).onChange(async (value) => {
           this.plugin.settings.showHeaderHints = value;
@@ -1470,6 +1474,7 @@ var DEFAULT_SETTINGS = {
   showFocusHighlight: true,
   showHeaderHints: true,
   // NEW: Header hints (enforcement is always on)
+  hideLinkedMentions: true,
   debugMode: false
 };
 module.exports = class SyncEmbedPlugin extends Plugin {
@@ -1530,6 +1535,7 @@ module.exports = class SyncEmbedPlugin extends Plugin {
     this.registerDomEvent(document, "focusout", this.trackFocusLoss.bind(this));
     this.addSettingTab(new SyncEmbedsSettingTab(this.app, this));
     this.updateFocusHighlight();
+    this.updateLinkedMentions();
     this.log("Sync Embeds plugin loaded successfully");
   }
   onunload() {
@@ -1669,12 +1675,20 @@ module.exports = class SyncEmbedPlugin extends Plugin {
     await this.saveData(this.settings);
     this.refreshAllEmbeds();
     this.updateFocusHighlight();
+    this.updateLinkedMentions();
   }
   updateFocusHighlight() {
     if (this.settings.showFocusHighlight) {
       document.body.removeClass("sync-embeds-no-focus-highlight");
     } else {
       document.body.addClass("sync-embeds-no-focus-highlight");
+    }
+  }
+  updateLinkedMentions() {
+    if (this.settings.hideLinkedMentions) {
+      document.body.addClass("sync-embeds-hide-linked-mentions");
+    } else {
+      document.body.removeClass("sync-embeds-hide-linked-mentions");
     }
   }
   refreshAllEmbeds() {

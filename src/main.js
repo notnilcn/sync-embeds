@@ -15,6 +15,7 @@ const DEFAULT_SETTINGS = {
     lazyLoadThreshold: '100px',
     showFocusHighlight: true,
     showHeaderHints: true,           // NEW: Header hints (enforcement is always on)
+    hideLinkedMentions: true,
     debugMode: false
 };
 
@@ -90,6 +91,7 @@ module.exports = class SyncEmbedPlugin extends Plugin {
         
         // Apply focus highlight setting
         this.updateFocusHighlight();
+        this.updateLinkedMentions();
         
         // Log successful load
         this.log('Sync Embeds plugin loaded successfully');
@@ -271,6 +273,7 @@ module.exports = class SyncEmbedPlugin extends Plugin {
         await this.saveData(this.settings);
         this.refreshAllEmbeds();
         this.updateFocusHighlight();
+        this.updateLinkedMentions();
     }
 
     updateFocusHighlight() {
@@ -278,6 +281,14 @@ module.exports = class SyncEmbedPlugin extends Plugin {
             document.body.removeClass('sync-embeds-no-focus-highlight');
         } else {
             document.body.addClass('sync-embeds-no-focus-highlight');
+        }
+    }
+
+    updateLinkedMentions() {
+        if (this.settings.hideLinkedMentions) {
+            document.body.addClass('sync-embeds-hide-linked-mentions');
+        } else {
+            document.body.removeClass('sync-embeds-hide-linked-mentions');
         }
     }
 

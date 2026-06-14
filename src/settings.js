@@ -168,6 +168,16 @@ class SyncEmbedsSettingTab extends PluginSettingTab {
                     await this.plugin.saveSettings();
                 }));
 
+        new Setting(containerEl)
+            .setName('Hide linked mentions')
+            .setDesc('Hide the linked mentions panel that appears at the bottom of embedded notes')
+            .addToggle(toggle => toggle
+                .setValue(this.plugin.settings.hideLinkedMentions)
+                .onChange(async (value) => {
+                    this.plugin.settings.hideLinkedMentions = value;
+                    await this.plugin.saveSettings();
+                }));
+
         // === HEADER MANAGEMENT SECTION ===
         containerEl.createEl('h3', { text: 'Header Management' });
 
