@@ -5,7 +5,11 @@ if you want to view the source, please visit the github repository of this plugi
 
 var __getOwnPropNames = Object.getOwnPropertyNames;
 var __commonJS = (cb, mod) => function __require() {
-  return mod || (0, cb[__getOwnPropNames(cb)[0]])((mod = { exports: {} }).exports, mod), mod.exports;
+  try {
+    return mod || (0, cb[__getOwnPropNames(cb)[0]])((mod = { exports: {} }).exports, mod), mod.exports;
+  } catch (e) {
+    throw mod = 0, e;
+  }
 };
 
 // node_modules/monkey-around/dist/index.cjs
@@ -153,8 +157,7 @@ var require_viewport_controller = __commonJS({
           }
           const keydownHandler = (event) => {
             var _a;
-            if (!embedData.viewportActive || !embedData.sectionInfo)
-              return;
+            if (!embedData.viewportActive || !embedData.sectionInfo) return;
             const { startLine, endLine } = embedData.sectionInfo;
             const cursor = editor.getCursor();
             const selection = editor.getSelection();
@@ -208,10 +211,8 @@ var require_viewport_controller = __commonJS({
             return;
           }
           const inputHandler = (event) => {
-            if (event.inputType !== "insertText" && event.inputType !== "insertFromPaste")
-              return;
-            if (event.data !== "#")
-              return;
+            if (event.inputType !== "insertText" && event.inputType !== "insertFromPaste") return;
+            if (event.data !== "#") return;
             const cursor = editor.getCursor();
             const line = editor.getLine(cursor.line);
             const beforeHash = line.substring(0, cursor.ch - 1);
@@ -240,16 +241,14 @@ Use: ${availableLevels.join(", ")}`, 5e3);
           const pasteHandler = (event) => {
             var _a;
             const clipboardData = (_a = event.clipboardData) == null ? void 0 : _a.getData("text");
-            if (!clipboardData)
-              return;
+            if (!clipboardData) return;
             const cursor = editor.getCursor();
             if (cursor.line > embedData.sectionInfo.startLine && cursor.line < embedData.sectionInfo.endLine) {
               const lines = clipboardData.split("\n");
               let hasInvalidHeaders = false;
               const adjustedLines = lines.map((line) => {
                 const match = line.match(/^(#{1,6})\s+(.*)$/);
-                if (!match)
-                  return line;
+                if (!match) return line;
                 const [, hashes, content] = match;
                 if (hashes.length <= headerLevel) {
                   hasInvalidHeaders = true;
@@ -280,8 +279,7 @@ Use: ${availableLevels.join(", ")}`, 5e3);
         let isProgrammaticUpdate = false;
         const enforceCursorBounds = () => {
           var _a;
-          if (isProgrammaticUpdate || !embedData.viewportActive || !embedData.sectionInfo)
-            return;
+          if (isProgrammaticUpdate || !embedData.viewportActive || !embedData.sectionInfo) return;
           const { startLine, endLine } = embedData.sectionInfo;
           const cursor = editor.getCursor();
           if (cursor.line <= startLine) {
@@ -327,8 +325,7 @@ Use: ${availableLevels.join(", ")}`, 5e3);
         const cmScroller = view.containerEl.querySelector(".cm-scroller");
         if (cmScroller) {
           const preventScroll = (e) => {
-            if (!embedData.viewportActive)
-              return;
+            if (!embedData.viewportActive) return;
             const scrollTop = cmScroller.scrollTop;
             const lineHeight = editor.defaultTextHeight || 20;
             const firstVisibleLine = Math.floor(scrollTop / lineHeight);
@@ -352,8 +349,7 @@ Use: ${availableLevels.join(", ")}`, 5e3);
         }
       }
       updateViewportImmediately(embedData) {
-        if (!embedData.viewportActive)
-          return;
+        if (!embedData.viewportActive) return;
         const currentContent = embedData.editor.getValue();
         const newSectionInfo = this.findSectionBounds(currentContent, embedData.section);
         if (newSectionInfo.startLine !== -1) {
@@ -541,8 +537,7 @@ var require_dynamic_paths = __commonJS({
         }
       }
       isValidMomentFormat(format) {
-        if (!format || format.trim() === "")
-          return false;
+        if (!format || format.trim() === "") return false;
         const validTokens = /[YMDdHhmsSaAZzX]/;
         return validTokens.test(format);
       }
@@ -567,24 +562,19 @@ var require_embed_manager = __commonJS({
       }
       cleanup() {
         this.activeEmbeds.forEach((embedData) => {
-          if (embedData.component)
-            embedData.component.unload();
-          if (embedData.leaf)
-            embedData.leaf.detach();
+          if (embedData.component) embedData.component.unload();
+          if (embedData.leaf) embedData.leaf.detach();
         });
         this.activeEmbeds.clear();
-        if (this.dynamicPaths)
-          this.dynamicPaths.cleanup();
+        if (this.dynamicPaths) this.dynamicPaths.cleanup();
       }
       getEmbedFromElement(element) {
-        if (!element)
-          return null;
+        if (!element) return null;
         let current = element;
         while (current && current !== document.body) {
           if (current.classList && current.classList.contains("sync-embed")) {
             const embedData = this.embedRegistry.get(current);
-            if (embedData)
-              return embedData;
+            if (embedData) return embedData;
           }
           current = current.parentElement;
         }
@@ -619,12 +609,9 @@ var require_embed_manager = __commonJS({
           pairs.forEach((pair) => {
             const [key, value] = pair.split(":").map((s) => s.trim());
             if (key && value !== void 0) {
-              if (value === "true")
-                options[key] = true;
-              else if (value === "false")
-                options[key] = false;
-              else
-                options[key] = value;
+              if (value === "true") options[key] = true;
+              else if (value === "false") options[key] = false;
+              else options[key] = value;
             }
           });
           line = line.replace(/\{[^}]+\}\]\]$/, "]]");
@@ -636,8 +623,7 @@ var require_embed_manager = __commonJS({
         try {
           const { line: cleanedLine, options } = this.parseEmbedOptions(embedLine);
           const match = cleanedLine.match(/!\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/);
-          if (!match)
-            return;
+          if (!match) return;
           let linkText = match[1];
           let displayAlias = (_a = match[2]) == null ? void 0 : _a.trim();
           const hasDynamicPattern = /\{\{(date|time|title)/.test(linkText);
@@ -652,15 +638,13 @@ var require_embed_manager = __commonJS({
               resolvedText = this.dynamicPaths.resolve(linkText, ctx);
               this.dynamicPaths.pathCache.set(cacheKey, { value: resolvedText, timestamp: now });
             }
-            if (!displayAlias)
-              displayAlias = linkText;
+            if (!displayAlias) displayAlias = linkText;
             linkText = resolvedText;
           }
           const linkPath = linkText.split("|")[0].trim();
           let notePath = linkPath.split("#")[0];
           const section = linkPath.includes("#") ? linkPath.substring(linkPath.indexOf("#") + 1) : null;
-          if (!notePath)
-            notePath = ctx.sourcePath;
+          if (!notePath) notePath = ctx.sourcePath;
           const file = this.plugin.app.metadataCache.getFirstLinkpathDest(notePath, ctx.sourcePath);
           if (!file) {
             this.renderError(container, `Note not found: ${notePath}`, addGap);
@@ -671,8 +655,7 @@ var require_embed_manager = __commonJS({
             return;
           }
           const embedContainer = container.createDiv("sync-embed");
-          if (addGap)
-            embedContainer.addClass("sync-embed-gap");
+          if (addGap) embedContainer.addClass("sync-embed-gap");
           embedContainer.addClass("sync-embed-loading");
           if (Object.keys(options).length > 0) {
             embedContainer.dataset.customOptions = JSON.stringify(options);
@@ -681,8 +664,7 @@ var require_embed_manager = __commonJS({
           const placeholder = embedContainer.createDiv("sync-embed-placeholder");
           placeholder.setText(`Loading ${placeholderText}...`);
           const renderAsCallout = options.callout !== void 0 ? options.callout : this.plugin.settings.renderAsCallout;
-          if (renderAsCallout)
-            embedContainer.addClass("is-callout-style");
+          if (renderAsCallout) embedContainer.addClass("is-callout-style");
           const observer = new IntersectionObserver((entries) => {
             entries.forEach((entry) => {
               if (entry.isIntersecting) {
@@ -729,8 +711,7 @@ var require_embed_manager = __commonJS({
               if (((_a = this.manager.plugin.currentFocusedEmbed) == null ? void 0 : _a.containerEl) === this.embedData.containerEl) {
                 this.manager.plugin.currentFocusedEmbed = null;
               }
-              if (this.embedData.leaf)
-                this.embedData.leaf.detach();
+              if (this.embedData.leaf) this.embedData.leaf.detach();
             }
           }(this, embedData));
           await leaf.openFile(file, { state: { mode: "source" } });
@@ -744,12 +725,9 @@ var require_embed_manager = __commonJS({
           embedData.editor = view.editor;
           this.embedRegistry.set(embedContainer, embedData);
           this.activeEmbeds.add(embedData);
-          if (customOptions.height)
-            embedContainer.style.setProperty("--sync-embed-height", customOptions.height);
-          if (customOptions.maxHeight)
-            embedContainer.style.setProperty("--sync-max-height", customOptions.maxHeight);
-          if (customOptions.collapse === true)
-            embedContainer.addClass("is-collapsed");
+          if (customOptions.height) embedContainer.style.setProperty("--sync-embed-height", customOptions.height);
+          if (customOptions.maxHeight) embedContainer.style.setProperty("--sync-max-height", customOptions.maxHeight);
+          if (customOptions.collapse === true) embedContainer.addClass("is-collapsed");
           const renderAsCallout = customOptions.callout !== void 0 ? customOptions.callout : this.plugin.settings.renderAsCallout;
           const headerTitle = alias || (section ? `${file.basename} > ${section}` : file.basename);
           if (section) {
@@ -789,13 +767,10 @@ var require_embed_manager = __commonJS({
         requestAnimationFrame(() => {
           setTimeout(() => {
             const titleEl = view.containerEl.querySelector(".inline-title");
-            if (titleEl)
-              titleEl.style.display = "none";
+            if (titleEl) titleEl.style.display = "none";
             const viewContent = view.containerEl.querySelector(".view-content");
-            if (!viewContent)
-              return;
-            if (view.containerEl.querySelector(".sync-embed-header"))
-              return;
+            if (!viewContent) return;
+            if (view.containerEl.querySelector(".sync-embed-header")) return;
             const headerUI = document.createElement("div");
             headerUI.className = "sync-embed-header";
             if (renderAsCallout) {
@@ -809,8 +784,7 @@ var require_embed_manager = __commonJS({
                 attr: { "href": linkPath, "data-href": linkPath }
               });
               headerUI.addEventListener("click", (e) => {
-                if (e.target.closest("a"))
-                  return;
+                if (e.target.closest("a")) return;
                 e.stopPropagation();
                 e.preventDefault();
                 containerEl.classList.toggle("is-collapsed");
@@ -839,8 +813,7 @@ var require_embed_manager = __commonJS({
         requestAnimationFrame(() => {
           setTimeout(() => {
             const propertiesEl = view.containerEl.querySelector(".metadata-container");
-            if (!propertiesEl)
-              return;
+            if (!propertiesEl) return;
             const heading = propertiesEl.querySelector(".metadata-properties-heading");
             if (heading && !propertiesEl.classList.contains("is-collapsed")) {
               heading.click();
@@ -850,8 +823,7 @@ var require_embed_manager = __commonJS({
       }
       renderError(container, message, addGap) {
         const errorDiv = container.createDiv("sync-embed-error");
-        if (addGap)
-          errorDiv.addClass("sync-embed-gap");
+        if (addGap) errorDiv.addClass("sync-embed-gap");
         errorDiv.setText(message);
       }
     };
@@ -1467,8 +1439,7 @@ var require_settings = __commonJS({
         return "custom";
       }
       validateCSSValue(value) {
-        if (!value || value.trim() === "")
-          return false;
+        if (!value || value.trim() === "") return false;
         const validPattern = /^(auto|none|\d+(\.\d+)?(px|em|rem|vh|vw|%))$/;
         const isValid = validPattern.test(value.trim());
         if (!isValid) {

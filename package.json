@@ -7,16 +7,19 @@
     "dev": "node esbuild.config.mjs",
     "build": "NODE_ENV=production node esbuild.config.mjs"
   },
-  "keywords": ["obsidian", "plugin", "embeds"],
+  "keywords": [
+    "obsidian",
+    "plugin",
+    "embeds"
+  ],
   "author": "uthvah",
   "license": "MIT",
   "devDependencies": {
     "@types/node": "^16.11.6",
-    "builtin-modules": "^3.3.0",
-    "esbuild": "0.17.3",
+    "esbuild": "^0.28.1",
     "obsidian": "latest"
   },
   "dependencies": {
-    "monkey-around": "^3.0.0"
+    "monkey-around": "3.0.0"
   }
 }
