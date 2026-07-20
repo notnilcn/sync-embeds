@@ -2,6 +2,9 @@ const { Component, WorkspaceLeaf, MarkdownView, setIcon } = require('obsidian');
 const ViewportController = require('./viewport-controller');
 const DynamicPaths = require('./dynamic-paths');
 
+// How deep sync embeds may nest inside one another before we stop.
+const MAX_EMBED_DEPTH = 4;
+
 class EmbedManager {
     constructor(plugin) {
         this.plugin = plugin;
@@ -50,11 +53,28 @@ class EmbedManager {
             return;
         }
 
+        const parsedEmbeds = embedLines.map(line => this.parseEmbedOptions(line));
+
+        // {seamless:true} and {box:false} strip chrome from the block as a whole, so
+        // they only take effect when every embed in the block asks for it — one embed
+        // cannot remove a border it shares with its siblings.
+        if (parsedEmbeds.every(({ options }) => options.seamless === true)) {
+            syncContainer.addClass('sync-seamless');
+        } else if (parsedEmbeds.every(({ options }) => options.box === false)) {
+            syncContainer.addClass('sync-no-box');
+        }
+
         const estimatedHeight = embedLines.length * 200;
         syncContainer.style.minHeight = `${estimatedHeight}px`;
 
-        for (let i = 0; i < embedLines.length; i++) {
-            await this.processEmbed(embedLines[i], syncContainer, ctx, i > 0);
+        // Where this sync block itself sits in its own note, so a same-note embed can
+        // tell whether it would be transcluding the block that renders it.
+        const selfInfo = ctx.getSectionInfo ? ctx.getSectionInfo(el) : null;
+        // Which embeds we are already nested inside, to stop cycles across notes.
+        const chain = this.readEmbedChain(el);
+
+        for (let i = 0; i < parsedEmbeds.length; i++) {
+            await this.processEmbed(parsedEmbeds[i], syncContainer, ctx, i > 0, selfInfo, chain);
         }
 
         setTimeout(() => { syncContainer.style.minHeight = ''; }, 100);
@@ -64,24 +84,115 @@ class EmbedManager {
         const optionsMatch = line.match(/\{([^}]+)\}\]\]$/);
         const options = {};
         if (optionsMatch) {
-            const optionsStr = optionsMatch[1];
-            const pairs = optionsStr.split(',');
+            const pairs = optionsMatch[1].split(',');
             pairs.forEach(pair => {
-                const [key, value] = pair.split(':').map(s => s.trim());
-                if (key && value !== undefined) {
-                    if (value === 'true') options[key] = true;
-                    else if (value === 'false') options[key] = false;
-                    else options[key] = value;
-                }
+                // Split on the FIRST colon only: values are free text and may contain
+                // their own, e.g. {marker:1.} or a time format.
+                const separator = pair.indexOf(':');
+                if (separator === -1) return;
+
+                const key = pair.slice(0, separator).trim();
+                const value = pair.slice(separator + 1).trim();
+                if (!key) return;
+
+                if (value === 'true') options[key] = true;
+                else if (value === 'false') options[key] = false;
+                else options[key] = value;
             });
             line = line.replace(/\{[^}]+\}\]\]$/, ']]');
         }
         return { line, options };
     }
 
-    async processEmbed(embedLine, container, ctx, addGap) {
+    /**
+     * Turn an option value into a CSS string literal for a `content:` property.
+     */
+    cssStringLiteral(value) {
+        return `"${String(value).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+    }
+
+    /**
+     * {marker:...} restyles the list bullet/number of an embedded list item — useful
+     * when a block embed of one item should read as part of a list in the host note.
+     *
+     *   {marker:false} / {marker:none}  strip the marker, put nothing back
+     *   {marker:-} / {marker:bullet}    replace it with a native-looking dot
+     *   {marker:1.} (any other text)    replace it with that literal text
+     *
+     * Every replacement also hides the source marker, otherwise the original and the
+     * replacement both render.
+     */
+    applyMarkerOptions(embedContainer, options) {
+        const marker = options.marker;
+
+        if (marker !== undefined && marker !== true) {
+            if (marker === false || marker === 'none') {
+                embedContainer.addClass('sync-hide-marker');
+            } else if (marker === 'bullet' || ['-', '*', '+'].includes(marker)) {
+                embedContainer.addClass('sync-hide-marker', 'sync-marker-bullet');
+            } else {
+                embedContainer.addClass('sync-hide-marker', 'sync-marker-text');
+                // The trailing space reproduces the gap baked into a literal "1. ".
+                embedContainer.style.setProperty(
+                    '--sync-marker-text',
+                    this.cssStringLiteral(`${marker} `)
+                );
+            }
+        }
+
+        // {indent:2em} pushes the marker (and the text hanging off it) further in.
+        if (options.indent) {
+            embedContainer.style.setProperty('--sync-marker-indent', options.indent);
+        }
+    }
+
+    /**
+     * The list of `path#target` keys of the embeds this element is rendered inside.
+     * The chain is stamped onto each embedded view's container, which is an ancestor
+     * of anything that view renders — including a nested sync block.
+     */
+    readEmbedChain(el) {
+        const host = el.closest?.('[data-sync-embed-chain]');
+        if (!host) return [];
         try {
-            const { line: cleanedLine, options } = this.parseEmbedOptions(embedLine);
+            return JSON.parse(host.dataset.syncEmbedChain) || [];
+        } catch {
+            return [];
+        }
+    }
+
+    /**
+     * Embedding a note into itself is only safe when the embed targets a section or
+     * block that does not contain the sync block doing the embedding. Returns an
+     * error message when the embed must be refused, or null when it is allowed.
+     */
+    checkSameNoteEmbed(section, selfInfo) {
+        if (!section) {
+            return 'Cannot embed a note inside itself. Link to a section or block instead.';
+        }
+
+        if (!selfInfo) {
+            // Without knowing where this sync block sits we cannot rule out a cycle.
+            return 'Cannot create a recursive embed of the same note.';
+        }
+
+        const bounds = this.viewportController.findTargetBounds(selfInfo.text, section);
+        if (!bounds.found) {
+            return `${section.startsWith('^') ? 'Block' : 'Section'} not found: ${section}`;
+        }
+
+        // The editable region is startLine + 1 .. endLine - 1.
+        const overlaps = selfInfo.lineEnd >= bounds.startLine + 1 && selfInfo.lineStart <= bounds.endLine - 1;
+        if (overlaps) {
+            return 'Cannot create a recursive embed: this sync block is inside the target section.';
+        }
+
+        return null;
+    }
+
+    async processEmbed(parsedEmbed, container, ctx, addGap, selfInfo = null, chain = []) {
+        try {
+            const { line: cleanedLine, options } = parsedEmbed;
             const match = cleanedLine.match(/!\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/);
             if (!match) return;
 
@@ -118,14 +229,31 @@ class EmbedManager {
                 return;
             }
 
-            if (file.path === ctx.sourcePath) {
-                this.renderError(container, "Cannot create a recursive embed of the same note.", addGap);
+            const embedKey = `${file.path}#${section || ''}`;
+
+            if (chain.includes(embedKey)) {
+                this.renderError(container, 'Cannot create a recursive embed: this embed is already open further up.', addGap);
                 return;
+            }
+
+            if (chain.length >= MAX_EMBED_DEPTH) {
+                this.renderError(container, `Embed nesting limit reached (${MAX_EMBED_DEPTH}).`, addGap);
+                return;
+            }
+
+            if (file.path === ctx.sourcePath) {
+                const reason = this.checkSameNoteEmbed(section, selfInfo);
+                if (reason) {
+                    this.renderError(container, reason, addGap);
+                    return;
+                }
             }
 
             const embedContainer = container.createDiv('sync-embed');
             if (addGap) embedContainer.addClass('sync-embed-gap');
             embedContainer.addClass('sync-embed-loading');
+            if (options.seamless === true) embedContainer.addClass('sync-seamless');
+            this.applyMarkerOptions(embedContainer, options);
 
             if (Object.keys(options).length > 0) {
                 embedContainer.dataset.customOptions = JSON.stringify(options);
@@ -143,7 +271,7 @@ class EmbedManager {
                     if (entry.isIntersecting) {
                         observer.disconnect();
                         requestAnimationFrame(() => {
-                            this.loadEmbed(embedContainer, file, section, displayAlias, ctx, placeholder, options);
+                            this.loadEmbed(embedContainer, file, section, displayAlias, ctx, placeholder, options, [...chain, embedKey]);
                         });
                     }
                 });
@@ -160,7 +288,7 @@ class EmbedManager {
         }
     }
 
-    async loadEmbed(embedContainer, file, section, alias, ctx, placeholder, customOptions = {}) {
+    async loadEmbed(embedContainer, file, section, alias, ctx, placeholder, customOptions = {}, chain = []) {
         try {
             const component = new Component();
             const leaf = new WorkspaceLeaf(this.plugin.app);
@@ -192,6 +320,12 @@ class EmbedManager {
                 }
             })(this, embedData));
 
+            // Stamp the chain on the leaf BEFORE opening the file: the view renders its
+            // content — including any nested sync blocks — during openFile, and those
+            // need to be able to see which embeds they are already inside.
+            const chainJSON = JSON.stringify(chain);
+            if (leaf.containerEl) leaf.containerEl.dataset.syncEmbedChain = chainJSON;
+
             await leaf.openFile(file, { state: { mode: 'source' } });
             const view = leaf.view;
 
@@ -203,6 +337,10 @@ class EmbedManager {
 
             embedData.view = view;
             embedData.editor = view.editor;
+
+            // Re-stamp on the view itself, since it gets re-parented out of the leaf
+            // and into the page below.
+            view.containerEl.dataset.syncEmbedChain = chainJSON;
 
             this.embedRegistry.set(embedContainer, embedData);
             this.activeEmbeds.add(embedData);
@@ -216,14 +354,15 @@ class EmbedManager {
 
             if (section) {
                 const content = view.editor.getValue();
-                const sectionInfo = this.viewportController.findSectionBounds(content, section);
+                const sectionInfo = this.viewportController.findTargetBounds(content, section);
 
-                if (sectionInfo.startLine === -1) {
+                if (!sectionInfo.found) {
                     embedContainer.empty();
                     embedContainer.removeClass('sync-embed-loading');
                     embedContainer.style.height = 'auto';
                     embedContainer.style.minHeight = '0';
-                    this.renderError(embedContainer, `Section not found: ${section}`, false);
+                    const label = section.startsWith('^') ? 'Block' : 'Section';
+                    this.renderError(embedContainer, `${label} not found: ${section}`, false);
                     leaf.detach();
                     return;
                 }
@@ -232,7 +371,10 @@ class EmbedManager {
             }
 
             // UNIFIED HEADER/TITLE LOGIC
-            const userWantsTitle = customOptions.title !== undefined ? customOptions.title : this.plugin.settings.showInlineTitle;
+            // A seamless embed is meant to read as if the text were typed into the host
+            // note, so it defaults to no title — {title:true} still forces one back on.
+            const defaultTitle = customOptions.seamless === true ? false : this.plugin.settings.showInlineTitle;
+            const userWantsTitle = customOptions.title !== undefined ? customOptions.title : defaultTitle;
             
             // Callouts ALWAYS generate a header (for folding). Normal embeds respect settings.
             if (renderAsCallout || userWantsTitle) {

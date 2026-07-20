@@ -95,16 +95,18 @@ var require_viewport_controller = __commonJS({
         const { view, editor, file, section } = embedData;
         await new Promise((resolve) => setTimeout(resolve, 100));
         const content = editor.getValue();
-        const sectionInfo = this.findSectionBounds(content, section);
-        if (sectionInfo.startLine === -1) {
-          console.warn("Sync Embeds: Section not found for viewport embedding:", section);
+        const sectionInfo = this.findTargetBounds(content, section);
+        if (!sectionInfo.found) {
+          console.warn("Sync Embeds: Target not found for viewport embedding:", section);
           return;
         }
         embedData.sectionInfo = sectionInfo;
         embedData.viewportActive = true;
         this.applyViewportRestriction(embedData);
         this.setupBoundaryProtection(embedData);
-        this.setupHeaderInputInterception(embedData);
+        if (sectionInfo.type === "heading") {
+          this.setupHeaderInputInterception(embedData);
+        }
         this.setupContentConstraints(embedData);
         this.scrollToSection(embedData);
       }
@@ -115,28 +117,35 @@ var require_viewport_controller = __commonJS({
         const embedId = "embed-" + Math.random().toString(36).substr(2, 9);
         view.containerEl.setAttribute("data-embed-id", embedId);
         embedData.embedId = embedId;
+        const tagContent = (attempts = 0) => {
+          const cmContent = view.containerEl.querySelector(".cm-content");
+          if (cmContent) {
+            cmContent.setAttribute("data-embed-content-id", embedId);
+            if (attempts > 0) this.updateViewportCSS(embedData, style);
+          } else if (attempts < 20) {
+            setTimeout(() => tagContent(attempts + 1), 50);
+          }
+        };
+        tagContent();
         this.updateViewportCSS(embedData, style);
         view.containerEl.appendChild(style);
         embedData.viewportStyle = style;
       }
       updateViewportCSS(embedData, style) {
-        const { sectionInfo, embedId, file } = embedData;
-        const { startLine, endLine } = sectionInfo;
-        let domOffset = 0;
-        const fileCache = this.plugin.app.metadataCache.getFileCache(file);
-        if (fileCache && fileCache.frontmatterPosition) {
-          domOffset = fileCache.frontmatterPosition.end.line;
-        }
-        const domStartLine = Math.max(0, startLine - domOffset);
-        const domEndLine = Math.max(0, endLine - domOffset);
+        const { sectionInfo, embedId } = embedData;
+        const { domStartLine, domEndLine } = this.toDomChildIndices(
+          embedData,
+          sectionInfo.startLine,
+          sectionInfo.endLine
+        );
         const css = `
-            /* Hide all lines BEFORE and INCLUDING the section header */
-            [data-embed-id="${embedId}"] .cm-line:nth-child(-n+${domStartLine + 1}) {
+            /* Hide everything BEFORE and INCLUDING the section header */
+            [data-embed-content-id="${embedId}"] > :nth-child(-n+${domStartLine + 1}) {
                 display: none !important;
             }
 
-            /* Hide all lines AFTER the section */
-            [data-embed-id="${embedId}"] .cm-line:nth-child(n+${domEndLine + 1}) {
+            /* Hide everything AFTER the section */
+            [data-embed-content-id="${embedId}"] > :nth-child(n+${domEndLine + 1}) {
                 display: none !important;
             }
 
@@ -146,6 +155,53 @@ var require_viewport_controller = __commonJS({
             }
         `;
         style.textContent = css;
+      }
+      /**
+       * Translate source line boundaries into child indices inside .cm-content.
+       *
+       * One source line is NOT one DOM child: CodeMirror folds frontmatter, and Live
+       * Preview collapses tables, code blocks and other widgets into a single element.
+       * Ask CodeMirror where each child actually starts rather than guessing.
+       *
+       * Returns the index of the last child to hide above the region, and the index of
+       * the first child to hide below it.
+       */
+      toDomChildIndices(embedData, startLine, endLine) {
+        var _a, _b;
+        const cm = (_a = embedData.editor) == null ? void 0 : _a.cm;
+        const children = (_b = cm == null ? void 0 : cm.contentDOM) == null ? void 0 : _b.children;
+        if (cm && children && children.length) {
+          let domStartLine = -1;
+          let domEndLine = children.length;
+          let measured = false;
+          for (let i = 0; i < children.length; i++) {
+            let line;
+            try {
+              line = cm.state.doc.lineAt(cm.posAtDOM(children[i])).number - 1;
+            } catch (e) {
+              continue;
+            }
+            measured = true;
+            if (line <= startLine) domStartLine = i;
+            if (line >= endLine && domEndLine === children.length) domEndLine = i;
+          }
+          if (measured) return { domStartLine, domEndLine };
+        }
+        const domOffset = this.getFrontmatterDomOffset(embedData.file);
+        return {
+          // -1 is legal: the region starts at the very first child, nothing to hide above.
+          domStartLine: Math.max(-1, startLine - domOffset),
+          domEndLine: Math.max(0, endLine - domOffset)
+        };
+      }
+      /**
+       * CodeMirror folds frontmatter down to a single line, so DOM children below it
+       * sit higher than their source line number suggests.
+       */
+      getFrontmatterDomOffset(file) {
+        var _a;
+        const fileCache = this.plugin.app.metadataCache.getFileCache(file);
+        return ((_a = fileCache == null ? void 0 : fileCache.frontmatterPosition) == null ? void 0 : _a.end.line) || 0;
       }
       setupBoundaryProtection(embedData) {
         const { view, editor, component } = embedData;
@@ -329,13 +385,13 @@ Use: ${availableLevels.join(", ")}`, 5e3);
             const scrollTop = cmScroller.scrollTop;
             const lineHeight = editor.defaultTextHeight || 20;
             const firstVisibleLine = Math.floor(scrollTop / lineHeight);
-            let domOffset = 0;
-            const fileCache = this.plugin.app.metadataCache.getFileCache(embedData.file);
-            if (fileCache && fileCache.frontmatterPosition) {
-              domOffset = fileCache.frontmatterPosition.end.line;
-            }
-            const domStartLine = Math.max(0, embedData.sectionInfo.startLine - domOffset);
-            const domEndLine = Math.max(0, embedData.sectionInfo.endLine - domOffset);
+            const indices = this.toDomChildIndices(
+              embedData,
+              embedData.sectionInfo.startLine,
+              embedData.sectionInfo.endLine
+            );
+            const domStartLine = Math.max(0, indices.domStartLine);
+            const domEndLine = Math.max(0, indices.domEndLine);
             if (firstVisibleLine < Math.max(0, domStartLine - 2)) {
               cmScroller.scrollTop = Math.max(0, domStartLine - 2) * lineHeight;
             } else if (firstVisibleLine > domEndLine - 2) {
@@ -351,8 +407,8 @@ Use: ${availableLevels.join(", ")}`, 5e3);
       updateViewportImmediately(embedData) {
         if (!embedData.viewportActive) return;
         const currentContent = embedData.editor.getValue();
-        const newSectionInfo = this.findSectionBounds(currentContent, embedData.section);
-        if (newSectionInfo.startLine !== -1) {
+        const newSectionInfo = this.findTargetBounds(currentContent, embedData.section);
+        if (newSectionInfo.found) {
           embedData.sectionInfo = newSectionInfo;
           if (embedData.viewportStyle) {
             this.updateViewportCSS(embedData, embedData.viewportStyle);
@@ -363,9 +419,24 @@ Use: ${availableLevels.join(", ")}`, 5e3);
         const { editor, sectionInfo } = embedData;
         const { startLine } = sectionInfo;
         setTimeout(() => {
-          editor.scrollIntoView({ line: startLine + 1, ch: 0 }, true);
-          editor.setCursor({ line: startLine + 1, ch: 0 });
+          const pos = { line: startLine + 1, ch: 0 };
+          editor.scrollIntoView({ from: pos, to: pos }, true);
+          editor.setCursor(pos);
         }, 150);
+      }
+      /**
+       * Resolve the link target after the '#' to a line range.
+       *
+       * The returned startLine/endLine are EXCLUSIVE boundaries: the editable region
+       * is startLine + 1 through endLine - 1. For a heading, startLine is the heading
+       * line itself (which is why it is hidden). For a block, startLine may be -1 when
+       * the block is the very first thing in the file.
+       */
+      findTargetBounds(content, target) {
+        if (target && target.startsWith("^")) {
+          return this.findBlockBounds(content, target.substring(1));
+        }
+        return this.findSectionBounds(content, target);
       }
       findSectionBounds(content, sectionName) {
         var _a;
@@ -382,7 +453,7 @@ Use: ${availableLevels.join(", ")}`, 5e3);
           }
         }
         if (startLine === -1) {
-          return { startLine: -1, endLine: -1, headerLevel: 0 };
+          return { found: false, startLine: -1, endLine: -1, headerLevel: 0, type: "heading" };
         }
         let endLine = lines.length;
         for (let i = startLine + 1; i < lines.length; i++) {
@@ -392,7 +463,80 @@ Use: ${availableLevels.join(", ")}`, 5e3);
             break;
           }
         }
-        return { startLine, endLine, headerLevel };
+        return { found: true, startLine, endLine, headerLevel, type: "heading" };
+      }
+      findBlockBounds(content, blockId) {
+        const notFound = { found: false, startLine: -1, endLine: -1, headerLevel: 0, type: "block" };
+        if (!/^[A-Za-z0-9-]+$/.test(blockId)) return notFound;
+        const lines = content.split("\n");
+        const fences = this.findFenceRanges(lines);
+        const markerRegex = new RegExp(`(^|\\s)\\^${this.escapeRegExp(blockId)}\\s*$`);
+        let markerLine = -1;
+        for (let i = 0; i < lines.length; i++) {
+          if (this.fenceAt(fences, i)) continue;
+          if (markerRegex.test(lines[i])) {
+            markerLine = i;
+            break;
+          }
+        }
+        if (markerLine === -1) return notFound;
+        let firstLine = markerLine;
+        let lastLine = markerLine;
+        if (/^\s*\^/.test(lines[markerLine])) {
+          let i = markerLine - 1;
+          while (i >= 0 && lines[i].trim() === "") i--;
+          if (i < 0) return notFound;
+          firstLine = i;
+          lastLine = i;
+        }
+        const listMatch = lines[firstLine].match(/^(\s*)(?:[-*+]|\d+[.)])\s/);
+        const fence = this.fenceAt(fences, lastLine);
+        if (fence) {
+          firstLine = fence.start;
+          lastLine = fence.end;
+        } else if (listMatch) {
+          const indent = listMatch[1].length;
+          for (let i = lastLine + 1; i < lines.length; i++) {
+            if (lines[i].trim() === "") break;
+            if (lines[i].match(/^\s*/)[0].length <= indent) break;
+            lastLine = i;
+          }
+        } else {
+          while (firstLine > 0) {
+            const prev = lines[firstLine - 1];
+            if (prev.trim() === "") break;
+            if (/^#{1,6}\s/.test(prev)) break;
+            if (this.fenceAt(fences, firstLine - 1)) break;
+            firstLine--;
+          }
+        }
+        return {
+          found: true,
+          startLine: firstLine - 1,
+          endLine: lastLine + 1,
+          headerLevel: 0,
+          type: "block"
+        };
+      }
+      findFenceRanges(lines) {
+        const ranges = [];
+        let open = null;
+        for (let i = 0; i < lines.length; i++) {
+          const match = lines[i].match(/^\s*(```+|~~~+)/);
+          if (!match) continue;
+          const marker = match[1];
+          if (!open) {
+            open = { start: i, char: marker[0], length: marker.length };
+          } else if (marker[0] === open.char && marker.length >= open.length) {
+            ranges.push({ start: open.start, end: i });
+            open = null;
+          }
+        }
+        if (open) ranges.push({ start: open.start, end: lines.length - 1 });
+        return ranges;
+      }
+      fenceAt(ranges, line) {
+        return ranges.find((r) => line >= r.start && line <= r.end) || null;
       }
       escapeRegExp(string) {
         return string.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -552,6 +696,7 @@ var require_embed_manager = __commonJS({
     var { Component, WorkspaceLeaf, MarkdownView: MarkdownView2, setIcon } = require("obsidian");
     var ViewportController = require_viewport_controller();
     var DynamicPaths = require_dynamic_paths();
+    var MAX_EMBED_DEPTH = 4;
     var EmbedManager2 = class {
       constructor(plugin) {
         this.plugin = plugin;
@@ -591,10 +736,18 @@ var require_embed_manager = __commonJS({
           syncContainer.createDiv("sync-empty").setText("No embeds found in sync block");
           return;
         }
+        const parsedEmbeds = embedLines.map((line) => this.parseEmbedOptions(line));
+        if (parsedEmbeds.every(({ options }) => options.seamless === true)) {
+          syncContainer.addClass("sync-seamless");
+        } else if (parsedEmbeds.every(({ options }) => options.box === false)) {
+          syncContainer.addClass("sync-no-box");
+        }
         const estimatedHeight = embedLines.length * 200;
         syncContainer.style.minHeight = `${estimatedHeight}px`;
-        for (let i = 0; i < embedLines.length; i++) {
-          await this.processEmbed(embedLines[i], syncContainer, ctx, i > 0);
+        const selfInfo = ctx.getSectionInfo ? ctx.getSectionInfo(el) : null;
+        const chain = this.readEmbedChain(el);
+        for (let i = 0; i < parsedEmbeds.length; i++) {
+          await this.processEmbed(parsedEmbeds[i], syncContainer, ctx, i > 0, selfInfo, chain);
         }
         setTimeout(() => {
           syncContainer.style.minHeight = "";
@@ -604,24 +757,98 @@ var require_embed_manager = __commonJS({
         const optionsMatch = line.match(/\{([^}]+)\}\]\]$/);
         const options = {};
         if (optionsMatch) {
-          const optionsStr = optionsMatch[1];
-          const pairs = optionsStr.split(",");
+          const pairs = optionsMatch[1].split(",");
           pairs.forEach((pair) => {
-            const [key, value] = pair.split(":").map((s) => s.trim());
-            if (key && value !== void 0) {
-              if (value === "true") options[key] = true;
-              else if (value === "false") options[key] = false;
-              else options[key] = value;
-            }
+            const separator = pair.indexOf(":");
+            if (separator === -1) return;
+            const key = pair.slice(0, separator).trim();
+            const value = pair.slice(separator + 1).trim();
+            if (!key) return;
+            if (value === "true") options[key] = true;
+            else if (value === "false") options[key] = false;
+            else options[key] = value;
           });
           line = line.replace(/\{[^}]+\}\]\]$/, "]]");
         }
         return { line, options };
       }
-      async processEmbed(embedLine, container, ctx, addGap) {
+      /**
+       * Turn an option value into a CSS string literal for a `content:` property.
+       */
+      cssStringLiteral(value) {
+        return `"${String(value).replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+      }
+      /**
+       * {marker:...} restyles the list bullet/number of an embedded list item — useful
+       * when a block embed of one item should read as part of a list in the host note.
+       *
+       *   {marker:false} / {marker:none}  strip the marker, put nothing back
+       *   {marker:-} / {marker:bullet}    replace it with a native-looking dot
+       *   {marker:1.} (any other text)    replace it with that literal text
+       *
+       * Every replacement also hides the source marker, otherwise the original and the
+       * replacement both render.
+       */
+      applyMarkerOptions(embedContainer, options) {
+        const marker = options.marker;
+        if (marker !== void 0 && marker !== true) {
+          if (marker === false || marker === "none") {
+            embedContainer.addClass("sync-hide-marker");
+          } else if (marker === "bullet" || ["-", "*", "+"].includes(marker)) {
+            embedContainer.addClass("sync-hide-marker", "sync-marker-bullet");
+          } else {
+            embedContainer.addClass("sync-hide-marker", "sync-marker-text");
+            embedContainer.style.setProperty(
+              "--sync-marker-text",
+              this.cssStringLiteral(`${marker} `)
+            );
+          }
+        }
+        if (options.indent) {
+          embedContainer.style.setProperty("--sync-marker-indent", options.indent);
+        }
+      }
+      /**
+       * The list of `path#target` keys of the embeds this element is rendered inside.
+       * The chain is stamped onto each embedded view's container, which is an ancestor
+       * of anything that view renders — including a nested sync block.
+       */
+      readEmbedChain(el) {
+        var _a;
+        const host = (_a = el.closest) == null ? void 0 : _a.call(el, "[data-sync-embed-chain]");
+        if (!host) return [];
+        try {
+          return JSON.parse(host.dataset.syncEmbedChain) || [];
+        } catch (e) {
+          return [];
+        }
+      }
+      /**
+       * Embedding a note into itself is only safe when the embed targets a section or
+       * block that does not contain the sync block doing the embedding. Returns an
+       * error message when the embed must be refused, or null when it is allowed.
+       */
+      checkSameNoteEmbed(section, selfInfo) {
+        if (!section) {
+          return "Cannot embed a note inside itself. Link to a section or block instead.";
+        }
+        if (!selfInfo) {
+          return "Cannot create a recursive embed of the same note.";
+        }
+        const bounds = this.viewportController.findTargetBounds(selfInfo.text, section);
+        if (!bounds.found) {
+          return `${section.startsWith("^") ? "Block" : "Section"} not found: ${section}`;
+        }
+        const overlaps = selfInfo.lineEnd >= bounds.startLine + 1 && selfInfo.lineStart <= bounds.endLine - 1;
+        if (overlaps) {
+          return "Cannot create a recursive embed: this sync block is inside the target section.";
+        }
+        return null;
+      }
+      async processEmbed(parsedEmbed, container, ctx, addGap, selfInfo = null, chain = []) {
         var _a;
         try {
-          const { line: cleanedLine, options } = this.parseEmbedOptions(embedLine);
+          const { line: cleanedLine, options } = parsedEmbed;
           const match = cleanedLine.match(/!\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/);
           if (!match) return;
           let linkText = match[1];
@@ -650,13 +877,27 @@ var require_embed_manager = __commonJS({
             this.renderError(container, `Note not found: ${notePath}`, addGap);
             return;
           }
-          if (file.path === ctx.sourcePath) {
-            this.renderError(container, "Cannot create a recursive embed of the same note.", addGap);
+          const embedKey = `${file.path}#${section || ""}`;
+          if (chain.includes(embedKey)) {
+            this.renderError(container, "Cannot create a recursive embed: this embed is already open further up.", addGap);
             return;
+          }
+          if (chain.length >= MAX_EMBED_DEPTH) {
+            this.renderError(container, `Embed nesting limit reached (${MAX_EMBED_DEPTH}).`, addGap);
+            return;
+          }
+          if (file.path === ctx.sourcePath) {
+            const reason = this.checkSameNoteEmbed(section, selfInfo);
+            if (reason) {
+              this.renderError(container, reason, addGap);
+              return;
+            }
           }
           const embedContainer = container.createDiv("sync-embed");
           if (addGap) embedContainer.addClass("sync-embed-gap");
           embedContainer.addClass("sync-embed-loading");
+          if (options.seamless === true) embedContainer.addClass("sync-seamless");
+          this.applyMarkerOptions(embedContainer, options);
           if (Object.keys(options).length > 0) {
             embedContainer.dataset.customOptions = JSON.stringify(options);
           }
@@ -670,7 +911,7 @@ var require_embed_manager = __commonJS({
               if (entry.isIntersecting) {
                 observer.disconnect();
                 requestAnimationFrame(() => {
-                  this.loadEmbed(embedContainer, file, section, displayAlias, ctx, placeholder, options);
+                  this.loadEmbed(embedContainer, file, section, displayAlias, ctx, placeholder, options, [...chain, embedKey]);
                 });
               }
             });
@@ -684,7 +925,7 @@ var require_embed_manager = __commonJS({
           this.renderError(container, `Error loading: ${error.message}`, addGap);
         }
       }
-      async loadEmbed(embedContainer, file, section, alias, ctx, placeholder, customOptions = {}) {
+      async loadEmbed(embedContainer, file, section, alias, ctx, placeholder, customOptions = {}, chain = []) {
         try {
           const component = new Component();
           const leaf = new WorkspaceLeaf(this.plugin.app);
@@ -714,6 +955,8 @@ var require_embed_manager = __commonJS({
               if (this.embedData.leaf) this.embedData.leaf.detach();
             }
           }(this, embedData));
+          const chainJSON = JSON.stringify(chain);
+          if (leaf.containerEl) leaf.containerEl.dataset.syncEmbedChain = chainJSON;
           await leaf.openFile(file, { state: { mode: "source" } });
           const view = leaf.view;
           if (!(view instanceof MarkdownView2)) {
@@ -723,6 +966,7 @@ var require_embed_manager = __commonJS({
           }
           embedData.view = view;
           embedData.editor = view.editor;
+          view.containerEl.dataset.syncEmbedChain = chainJSON;
           this.embedRegistry.set(embedContainer, embedData);
           this.activeEmbeds.add(embedData);
           if (customOptions.height) embedContainer.style.setProperty("--sync-embed-height", customOptions.height);
@@ -732,19 +976,21 @@ var require_embed_manager = __commonJS({
           const headerTitle = alias || (section ? `${file.basename} > ${section}` : file.basename);
           if (section) {
             const content = view.editor.getValue();
-            const sectionInfo = this.viewportController.findSectionBounds(content, section);
-            if (sectionInfo.startLine === -1) {
+            const sectionInfo = this.viewportController.findTargetBounds(content, section);
+            if (!sectionInfo.found) {
               embedContainer.empty();
               embedContainer.removeClass("sync-embed-loading");
               embedContainer.style.height = "auto";
               embedContainer.style.minHeight = "0";
-              this.renderError(embedContainer, `Section not found: ${section}`, false);
+              const label = section.startsWith("^") ? "Block" : "Section";
+              this.renderError(embedContainer, `${label} not found: ${section}`, false);
               leaf.detach();
               return;
             }
             await this.viewportController.setupSectionViewport(embedData);
           }
-          const userWantsTitle = customOptions.title !== void 0 ? customOptions.title : this.plugin.settings.showInlineTitle;
+          const defaultTitle = customOptions.seamless === true ? false : this.plugin.settings.showInlineTitle;
+          const userWantsTitle = customOptions.title !== void 0 ? customOptions.title : defaultTitle;
           if (renderAsCallout || userWantsTitle) {
             this.setupHeaderUI(embedData, headerTitle, renderAsCallout, !!section);
           }
@@ -1140,7 +1386,7 @@ ${line}`, { line: cursor.line, ch: line.length });
       insertHeaderCommand(level) {
         return (embedData) => {
           const { editor, sectionInfo } = embedData;
-          if (sectionInfo) {
+          if (sectionInfo && sectionInfo.type === "heading") {
             const { headerLevel } = sectionInfo;
             if (level <= headerLevel) {
               if (this.plugin.settings.showHeaderHints) {
@@ -1342,10 +1588,28 @@ var require_settings = __commonJS({
             <ul>
                 <li><code>![[Note Name]]</code> - Embed entire note</li>
                 <li><code>![[Note Name#Section]]</code> - Embed specific section</li>
+                <li><code>![[Note Name#^blockid]]</code> - Embed a specific block</li>
                 <li><code>![[Note Name|Custom Title]]</code> - Display with custom title</li>
                 <li><code>![[Note Name#Section|Custom Title]]</code> - Section with custom title</li>
             </ul>
-            
+
+            <p><strong>Embedding From the Same Note:</strong></p>
+            <ul>
+                <li><code>![[#Section]]</code> - Embed a section of the current note</li>
+                <li><code>![[#^blockid]]</code> - Embed a block of the current note</li>
+            </ul>
+            <p><em>Note: A note can only embed itself by section or block, and only when the
+            sync block is outside the target. Embedding a whole note into itself, or a section
+            that contains the sync block, is refused to prevent infinite recursion.</em></p>
+
+            <p><strong>Block References:</strong></p>
+            <ul>
+                <li>A block is a paragraph, list item, table, callout or code block tagged with <code>^blockid</code></li>
+                <li>Obsidian creates these for you when you copy a block link (right click a block \u2192 Copy block link)</li>
+                <li>A tagged list item brings its nested children along with it</li>
+                <li>Header hierarchy enforcement does not apply inside block embeds</li>
+            </ul>
+
             <p><strong>Per-Embed Custom Options:</strong></p>
             <ul>
                 <li><code>![[Note|Alias{height:500px}]]</code> - Custom height for this embed</li>
@@ -1354,9 +1618,26 @@ var require_settings = __commonJS({
                 <li><code>![[Note|Alias{collapse:true}]]</code> - Start embed in collapsed state (requires callout style)</li>
                 <li><code>![[Note|Alias{callout:true}]]</code> - Force callout style for this embed</li>
                 <li><code>![[Note|Alias{height:400px,title:false}]]</code> - Multiple options</li>
+                <li><code>![[Note{box:false}]]</code> - Drop the bounding box, keep the padding</li>
+                <li><code>![[Note#Header{seamless:true}]]</code> - Dissolve the block entirely, so the
+                    embedded text sits in the note as if it were typed there (also hides the title
+                    unless you add <code>title:true</code>)</li>
             </ul>
-            <p><em>Note: Options go inside curly braces before the closing ]]</em></p>
-            
+            <p><em>Note: Options go inside curly braces before the closing ]]. An alias is optional \u2014
+            <code>![[Note#Header{seamless:true,marker:1.}]]</code> works too. <code>box</code> and
+            <code>seamless</code> restyle the whole sync block, so they only apply when every embed
+            in the block sets them.</em></p>
+
+            <p><strong>List Marker Options (for block embeds of a list item):</strong></p>
+            <ul>
+                <li><code>![[Note#^blockid{marker:1.}]]</code> - Replace the item's bullet with the literal text <code>1.</code></li>
+                <li><code>![[Note#^blockid{marker:-}]]</code> - Replace it with a normal bullet</li>
+                <li><code>![[Note#^blockid{marker:false}]]</code> - Strip the bullet entirely</li>
+                <li><code>![[Note#^blockid{marker:1.,indent:2em}]]</code> - Push the marker and its text further in</li>
+            </ul>
+            <p><em>Note: marker options restyle every list line in the embed, so they suit
+            single-item block embeds rather than sections containing whole lists.</em></p>
+
             <p><strong>Dynamic Patterns:</strong></p>
             <ul>
                 <li><code>![[Daily/{{date:YYYY-MM-DD}}|Today]]</code> - Current date with display name</li>
@@ -1371,7 +1652,7 @@ var require_settings = __commonJS({
             <p><strong>Header Management:</strong></p>
             <ul>
                 <li>Use <code>Alt+2</code> through <code>Alt+6</code> to insert headers (H2-H6)</li>
-                <li>In section embeds, only sub-headers are allowed (e.g., if section is H2, only H3-H6 work)</li>
+                <li>In heading section embeds, only sub-headers are allowed (e.g., if section is H2, only H3-H6 work)</li>
                 <li>Typing <code>#</code> at line start is blocked in section embeds to prevent hierarchy violations</li>
                 <li>Press the same hotkey again on a header to remove formatting</li>
                 <li>Press a different hotkey to change header level</li>

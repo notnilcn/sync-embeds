@@ -28,6 +28,8 @@ https://github.com/user-attachments/assets/68d20937-b4a0-4790-9aa8-34f670e42893
 - 🔄 **Live "Two-Way Syncing"** — Edit an embed and see the changes reflected in the source note instantly. No "saving," no lag, no context switching.
 - ⌨️ **Full Keyboard Shortcut Support** — The #1 limitation of native embeds is solved. Use all your familiar hotkeys for checkboxes (`Ctrl/Cmd+L`), formatting (`Ctrl/Cmd+B/I`), lists, and headers, directly within an embed.
 - 🎯 **Section & Header Embeds** — Isolate and edit just a single section from a note using the standard `![[My Note#My Header]]` syntax. Perfect for managing active tasks from a central dashboard.
+- 🧩 **Block Embeds** — Target a single block with `![[My Note#^blockid]]`. Works with paragraphs, list items (children included), tables, callouts and code blocks.
+- 🪞 **Same-Note Embeds** — Surface a section or block of the *current* note elsewhere in it with `![[#My Header]]` or `![[#^blockid]]`, with recursion guarded automatically.
 - 🚀 **Dynamic Patterns (For Daily Notes)** — Create embeds that automatically update based on dates or note titles (e.g., `{{date}}`). 
 - 🎨 **Smart Header Management** — Section embeds intelligently enforce header hierarchy to prevent your markdown structure from breaking.
 - 🎭 **Custom Display Names** — Show friendly aliases instead of raw file paths for cleaner, more readable page elements.
@@ -103,12 +105,13 @@ Create embeds that automatically adapt to the current context. Perfect for templ
 
 ### Custom Options
 
-Override global settings for individual embeds right in the alias:
+Override global settings for individual embeds. Options go in curly braces just before the closing `]]` — with or without an alias:
 
 ````markdown
 ```sync
 ![[Long Note|Compact View{height:300px}]]
 ![[Reference|Full Height{maxHeight:none,title:false}]]
+![[Note#Header{seamless:true,marker:1.}]]
 ```
 ````
 
@@ -116,6 +119,42 @@ Override global settings for individual embeds right in the alias:
 - `height` — Set fixed height (e.g., `400px`, `60vh`)
 - `maxHeight` — Set maximum height before scrolling
 - `title` — Show/hide title (`true` or `false`)
+- `callout` — Force callout style with a sticky, foldable header
+- `collapse` — Start collapsed (requires callout style)
+- `box` — `false` drops the bounding box but keeps the padding
+- `seamless` — `true` dissolves the block entirely: no box, no padding, no vertical offset, so the embedded text sits in the note as if it were typed there. Also hides the title unless you pass `title:true`.
+- `marker` — Restyle an embedded list item's bullet (see below)
+- `indent` — Extra leading indent for the marker and its text (e.g., `2em`)
+
+`box` and `seamless` restyle the sync block as a whole, so they only take effect when every embed in the block sets them.
+
+### Seamless Blocks
+
+Make an embed indistinguishable from the surrounding note:
+
+````markdown
+```sync
+![[Project Alpha#Active Tasks{seamless:true}]]
+```
+````
+
+### List Markers
+
+When you embed a single list item by block reference, `marker` controls what stands in for its bullet — handy for weaving an embedded item into a list in the host note:
+
+````markdown
+```sync
+![[Tasks#^step-one{seamless:true,marker:1.}]]
+![[Tasks#^step-two{seamless:true,marker:-}]]
+![[Tasks#^step-three{seamless:true,marker:false}]]
+```
+````
+
+- `marker:1.` (or any other text) — replaces the bullet with that literal text, styled like a native list number
+- `marker:-` (or `*`, `+`, `bullet`) — replaces it with a normal bullet
+- `marker:false` (or `none`) — strips the bullet entirely
+
+> *Marker options restyle every list line in the embed, so they suit single-item block embeds rather than sections containing whole lists.*
 
 ---
 

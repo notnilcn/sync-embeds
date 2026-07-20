@@ -242,10 +242,28 @@ class SyncEmbedsSettingTab extends PluginSettingTab {
             <ul>
                 <li><code>![[Note Name]]</code> - Embed entire note</li>
                 <li><code>![[Note Name#Section]]</code> - Embed specific section</li>
+                <li><code>![[Note Name#^blockid]]</code> - Embed a specific block</li>
                 <li><code>![[Note Name|Custom Title]]</code> - Display with custom title</li>
                 <li><code>![[Note Name#Section|Custom Title]]</code> - Section with custom title</li>
             </ul>
-            
+
+            <p><strong>Embedding From the Same Note:</strong></p>
+            <ul>
+                <li><code>![[#Section]]</code> - Embed a section of the current note</li>
+                <li><code>![[#^blockid]]</code> - Embed a block of the current note</li>
+            </ul>
+            <p><em>Note: A note can only embed itself by section or block, and only when the
+            sync block is outside the target. Embedding a whole note into itself, or a section
+            that contains the sync block, is refused to prevent infinite recursion.</em></p>
+
+            <p><strong>Block References:</strong></p>
+            <ul>
+                <li>A block is a paragraph, list item, table, callout or code block tagged with <code>^blockid</code></li>
+                <li>Obsidian creates these for you when you copy a block link (right click a block → Copy block link)</li>
+                <li>A tagged list item brings its nested children along with it</li>
+                <li>Header hierarchy enforcement does not apply inside block embeds</li>
+            </ul>
+
             <p><strong>Per-Embed Custom Options:</strong></p>
             <ul>
                 <li><code>![[Note|Alias{height:500px}]]</code> - Custom height for this embed</li>
@@ -254,9 +272,26 @@ class SyncEmbedsSettingTab extends PluginSettingTab {
                 <li><code>![[Note|Alias{collapse:true}]]</code> - Start embed in collapsed state (requires callout style)</li>
                 <li><code>![[Note|Alias{callout:true}]]</code> - Force callout style for this embed</li>
                 <li><code>![[Note|Alias{height:400px,title:false}]]</code> - Multiple options</li>
+                <li><code>![[Note{box:false}]]</code> - Drop the bounding box, keep the padding</li>
+                <li><code>![[Note#Header{seamless:true}]]</code> - Dissolve the block entirely, so the
+                    embedded text sits in the note as if it were typed there (also hides the title
+                    unless you add <code>title:true</code>)</li>
             </ul>
-            <p><em>Note: Options go inside curly braces before the closing ]]</em></p>
-            
+            <p><em>Note: Options go inside curly braces before the closing ]]. An alias is optional —
+            <code>![[Note#Header{seamless:true,marker:1.}]]</code> works too. <code>box</code> and
+            <code>seamless</code> restyle the whole sync block, so they only apply when every embed
+            in the block sets them.</em></p>
+
+            <p><strong>List Marker Options (for block embeds of a list item):</strong></p>
+            <ul>
+                <li><code>![[Note#^blockid{marker:1.}]]</code> - Replace the item's bullet with the literal text <code>1.</code></li>
+                <li><code>![[Note#^blockid{marker:-}]]</code> - Replace it with a normal bullet</li>
+                <li><code>![[Note#^blockid{marker:false}]]</code> - Strip the bullet entirely</li>
+                <li><code>![[Note#^blockid{marker:1.,indent:2em}]]</code> - Push the marker and its text further in</li>
+            </ul>
+            <p><em>Note: marker options restyle every list line in the embed, so they suit
+            single-item block embeds rather than sections containing whole lists.</em></p>
+
             <p><strong>Dynamic Patterns:</strong></p>
             <ul>
                 <li><code>![[Daily/{{date:YYYY-MM-DD}}|Today]]</code> - Current date with display name</li>
@@ -271,7 +306,7 @@ class SyncEmbedsSettingTab extends PluginSettingTab {
             <p><strong>Header Management:</strong></p>
             <ul>
                 <li>Use <code>Alt+2</code> through <code>Alt+6</code> to insert headers (H2-H6)</li>
-                <li>In section embeds, only sub-headers are allowed (e.g., if section is H2, only H3-H6 work)</li>
+                <li>In heading section embeds, only sub-headers are allowed (e.g., if section is H2, only H3-H6 work)</li>
                 <li>Typing <code>#</code> at line start is blocked in section embeds to prevent hierarchy violations</li>
                 <li>Press the same hotkey again on a header to remove formatting</li>
                 <li>Press a different hotkey to change header level</li>

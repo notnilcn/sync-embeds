@@ -367,8 +367,9 @@ class CommandInterceptor {
         return (embedData) => {
             const { editor, sectionInfo } = embedData;
             
-            // Check if this is a section embed - always enforce in section embeds
-            if (sectionInfo) {
+            // Check if this is a section embed - always enforce in section embeds.
+            // Block embeds have no header hierarchy to protect.
+            if (sectionInfo && sectionInfo.type === 'heading') {
                 const { headerLevel } = sectionInfo;
                 
                 // Block same-level or higher

@@ -10,6 +10,56 @@
   padding: 16px;
 }
 
+/* {box:false} — drop the bounding box entirely */
+.sync-container.sync-no-box {
+  border: none;
+  background: transparent;
+  padding: 0;
+}
+
+/* {seamless:true} — dissolve the block entirely: no box, no padding, no vertical
+   offset, so the embedded text sits in the note as if it were typed there.
+   The code block wrapper (.cm-embed-block) adds no chrome of its own, so removing
+   the container's border/background is what actually makes the embed disappear
+   into the note. */
+.sync-container.sync-seamless {
+  border: none;
+  background: transparent;
+  border-radius: 0;
+  padding: 0;
+  margin: 0;
+}
+
+/* No separator rule between embeds when seamless */
+.sync-container.sync-seamless .sync-embed-gap {
+  border-top: none;
+}
+
+.sync-embed.sync-seamless .cm-content {
+  padding-bottom: 0 !important;
+  padding-left: 0 !important;
+  padding-right: 0 !important;
+}
+
+.sync-embed.sync-seamless .cm-contentContainer {
+  padding-top: 0 !important;
+}
+
+.sync-embed.sync-seamless .sync-embed-header {
+  padding: 0 !important;
+}
+
+.sync-embed.sync-seamless .metadata-container {
+  padding-left: 0 !important;
+  padding-right: 0 !important;
+}
+
+/* Lines outside the embedded section. Applied per-line by ViewportController
+   because CodeMirror virtualises the document — see applyLineVisibility. */
+.sync-line-hidden {
+  display: none !important;
+}
+
 /* === EMBED WRAPPER === */
 .sync-embed {
   border: none !important; /* Normal embeds get no border */
@@ -131,6 +181,63 @@
 /* Rotate fold icon when collapsed */
 .sync-embed.is-collapsed .sync-embed-fold {
     transform: rotate(-90deg);
+}
+
+/* Hide the list bullet/number marker (block embeds of a single list item) */
+.sync-embed.sync-hide-marker .cm-formatting-list {
+  display: none !important;
+}
+
+/* Both replacements below carry the indent as their own leading margin rather
+   than shifting the line. CodeMirror derives a list line's hanging indent from
+   the rendered width of its leading marker, so growing the marker box indents
+   the marker and re-aligns wrapped text in one step — no fighting the
+   `margin-inline: 0 !important` rule the embed padding system sets on .cm-line.
+
+   Shared box geometry, matched to what Obsidian builds natively for a marker:
+   `.cm-formatting-list-ul/-ol` opens the cell with
+   `padding-inline-start: var(--list-padding-inline-start)`, so the replacement
+   carries that same lead (plus any extra indent) as margin — margin rather than
+   padding so the bullet's background paints the dot alone, not the lead.
+
+   `text-indent: 0` is load-bearing: a list line's hanging indent is a *negative*
+   text-indent, which inherits into these inline-block pseudo-elements and drags
+   their generated text back out of their own shrink-to-fit box — that collapses
+   a text marker to zero width and makes it vanish entirely. */
+.sync-embed.sync-marker-text .HyperMD-list-line::before,
+.sync-embed.sync-marker-bullet .HyperMD-list-line::before {
+  display: inline-block;
+  text-indent: 0;
+  margin-inline-start: calc(
+    var(--sync-marker-indent, 0px) + var(--list-padding-inline-start, 0px)
+  );
+}
+
+/* Replace the marker with custom text, e.g. {marker:1.} — styled like a native
+   ordered-list number rather than plain body text. The trailing gap to the text
+   is the space already baked into --sync-marker-text, mirroring the literal
+   "1. " Obsidian renders, so no extra end margin. */
+.sync-embed.sync-marker-text .HyperMD-list-line::before {
+  content: var(--sync-marker-text, "");
+  color: var(--list-marker-color);
+  font-variant-numeric: tabular-nums;
+  white-space: pre;
+  margin-inline-end: 0;
+}
+
+/* Replace the marker with a real bullet, e.g. {marker:-} — mirrors the dot
+   Obsidian draws for .list-bullet::after so it matches unstyled list items.
+   The end margin stands in for the rest of the native "- " cell: the slack
+   around the dot inside the hyphen glyph plus the space that follows it. */
+.sync-embed.sync-marker-bullet .HyperMD-list-line::before {
+  content: "";
+  width: var(--list-bullet-size, 0.3em);
+  height: var(--list-bullet-size, 0.3em);
+  border: var(--list-bullet-border, none);
+  border-radius: var(--list-bullet-radius, 50%);
+  background-color: var(--list-marker-color);
+  vertical-align: middle;
+  margin-inline-end: 0.35em;
 }
 
 /* Gap between embeds */

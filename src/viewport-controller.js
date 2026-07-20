@@ -11,10 +11,10 @@ class ViewportController {
         await new Promise(resolve => setTimeout(resolve, 100));
 
         const content = editor.getValue();
-        const sectionInfo = this.findSectionBounds(content, section);
+        const sectionInfo = this.findTargetBounds(content, section);
 
-        if (sectionInfo.startLine === -1) {
-            console.warn('Sync Embeds: Section not found for viewport embedding:', section);
+        if (!sectionInfo.found) {
+            console.warn('Sync Embeds: Target not found for viewport embedding:', section);
             return;
         }
 
@@ -23,14 +23,17 @@ class ViewportController {
 
         this.applyViewportRestriction(embedData);
         this.setupBoundaryProtection(embedData);
-        this.setupHeaderInputInterception(embedData);
+        // Header hierarchy only means something inside a heading section.
+        if (sectionInfo.type === 'heading') {
+            this.setupHeaderInputInterception(embedData);
+        }
         this.setupContentConstraints(embedData);
         this.scrollToSection(embedData);
     }
 
     applyViewportRestriction(embedData) {
         const { view } = embedData;
-        
+
         const style = document.createElement('style');
         style.className = 'sync-viewport-style';
 
@@ -38,35 +41,45 @@ class ViewportController {
         view.containerEl.setAttribute('data-embed-id', embedId);
         embedData.embedId = embedId;
 
+        // Tag this editor's own .cm-content so the line rules can use a child
+        // combinator. Without it the descendant selector also matches the lines of
+        // any embed nested inside this one, whose line numbering is unrelated.
+        const tagContent = (attempts = 0) => {
+            const cmContent = view.containerEl.querySelector('.cm-content');
+            if (cmContent) {
+                cmContent.setAttribute('data-embed-content-id', embedId);
+                // Re-measure: the first pass may have run before the editor had a DOM.
+                if (attempts > 0) this.updateViewportCSS(embedData, style);
+            } else if (attempts < 20) {
+                setTimeout(() => tagContent(attempts + 1), 50);
+            }
+        };
+        tagContent();
+
         this.updateViewportCSS(embedData, style);
         view.containerEl.appendChild(style);
         embedData.viewportStyle = style;
     }
 
     updateViewportCSS(embedData, style) {
-        const { sectionInfo, embedId, file } = embedData;
-        const { startLine, endLine } = sectionInfo;
+        const { sectionInfo, embedId } = embedData;
+        const { domStartLine, domEndLine } = this.toDomChildIndices(
+            embedData,
+            sectionInfo.startLine,
+            sectionInfo.endLine
+        );
 
-        // Frontmatter DOM Offset compensation
-        // CodeMirror folds frontmatter, removing all but ONE line from the DOM.
-        let domOffset = 0;
-        const fileCache = this.plugin.app.metadataCache.getFileCache(file);
-        if (fileCache && fileCache.frontmatterPosition) {
-            // No +1 needed because the first line is retained by CM6 for the fold widget
-            domOffset = fileCache.frontmatterPosition.end.line;
-        }
-
-        const domStartLine = Math.max(0, startLine - domOffset);
-        const domEndLine = Math.max(0, endLine - domOffset);
-
+        // These match every direct child, not just .cm-line, because Live Preview
+        // renders code blocks and other block widgets as siblings of the lines —
+        // matching only .cm-line would leave those widgets visible outside the region.
         const css = `
-            /* Hide all lines BEFORE and INCLUDING the section header */
-            [data-embed-id="${embedId}"] .cm-line:nth-child(-n+${domStartLine + 1}) {
+            /* Hide everything BEFORE and INCLUDING the section header */
+            [data-embed-content-id="${embedId}"] > :nth-child(-n+${domStartLine + 1}) {
                 display: none !important;
             }
 
-            /* Hide all lines AFTER the section */
-            [data-embed-id="${embedId}"] .cm-line:nth-child(n+${domEndLine + 1}) {
+            /* Hide everything AFTER the section */
+            [data-embed-content-id="${embedId}"] > :nth-child(n+${domEndLine + 1}) {
                 display: none !important;
             }
 
@@ -77,6 +90,59 @@ class ViewportController {
         `;
 
         style.textContent = css;
+    }
+
+    /**
+     * Translate source line boundaries into child indices inside .cm-content.
+     *
+     * One source line is NOT one DOM child: CodeMirror folds frontmatter, and Live
+     * Preview collapses tables, code blocks and other widgets into a single element.
+     * Ask CodeMirror where each child actually starts rather than guessing.
+     *
+     * Returns the index of the last child to hide above the region, and the index of
+     * the first child to hide below it.
+     */
+    toDomChildIndices(embedData, startLine, endLine) {
+        const cm = embedData.editor?.cm;
+        const children = cm?.contentDOM?.children;
+
+        if (cm && children && children.length) {
+            let domStartLine = -1;
+            let domEndLine = children.length;
+            let measured = false;
+
+            for (let i = 0; i < children.length; i++) {
+                let line;
+                try {
+                    line = cm.state.doc.lineAt(cm.posAtDOM(children[i])).number - 1;
+                } catch {
+                    continue; // child CodeMirror cannot place; skip it
+                }
+                measured = true;
+                if (line <= startLine) domStartLine = i;
+                if (line >= endLine && domEndLine === children.length) domEndLine = i;
+            }
+
+            if (measured) return { domStartLine, domEndLine };
+        }
+
+        // Fallback: assume one line per child, correcting only for folded frontmatter.
+        const domOffset = this.getFrontmatterDomOffset(embedData.file);
+        return {
+            // -1 is legal: the region starts at the very first child, nothing to hide above.
+            domStartLine: Math.max(-1, startLine - domOffset),
+            domEndLine: Math.max(0, endLine - domOffset)
+        };
+    }
+
+    /**
+     * CodeMirror folds frontmatter down to a single line, so DOM children below it
+     * sit higher than their source line number suggests.
+     */
+    getFrontmatterDomOffset(file) {
+        const fileCache = this.plugin.app.metadataCache.getFileCache(file);
+        // No +1 needed because the first line is retained by CM6 for the fold widget.
+        return fileCache?.frontmatterPosition?.end.line || 0;
     }
 
     setupBoundaryProtection(embedData) {
@@ -301,15 +367,13 @@ class ViewportController {
                 const lineHeight = editor.defaultTextHeight || 20;
                 const firstVisibleLine = Math.floor(scrollTop / lineHeight);
                 
-                // Frontmatter DOM Offset compensation for scrolling bounds
-                let domOffset = 0;
-                const fileCache = this.plugin.app.metadataCache.getFileCache(embedData.file);
-                if (fileCache && fileCache.frontmatterPosition) {
-                    domOffset = fileCache.frontmatterPosition.end.line;
-                }
-                
-                const domStartLine = Math.max(0, embedData.sectionInfo.startLine - domOffset);
-                const domEndLine = Math.max(0, embedData.sectionInfo.endLine - domOffset);
+                const indices = this.toDomChildIndices(
+                    embedData,
+                    embedData.sectionInfo.startLine,
+                    embedData.sectionInfo.endLine
+                );
+                const domStartLine = Math.max(0, indices.domStartLine);
+                const domEndLine = Math.max(0, indices.domEndLine);
 
                 if (firstVisibleLine < Math.max(0, domStartLine - 2)) {
                     cmScroller.scrollTop = Math.max(0, domStartLine - 2) * lineHeight;
@@ -329,9 +393,9 @@ class ViewportController {
         if (!embedData.viewportActive) return;
 
         const currentContent = embedData.editor.getValue();
-        const newSectionInfo = this.findSectionBounds(currentContent, embedData.section);
+        const newSectionInfo = this.findTargetBounds(currentContent, embedData.section);
 
-        if (newSectionInfo.startLine !== -1) {
+        if (newSectionInfo.found) {
             embedData.sectionInfo = newSectionInfo;
 
             if (embedData.viewportStyle) {
@@ -345,9 +409,26 @@ class ViewportController {
         const { startLine } = sectionInfo;
 
         setTimeout(() => {
-            editor.scrollIntoView({ line: startLine + 1, ch: 0 }, true);
-            editor.setCursor({ line: startLine + 1, ch: 0 });
+            const pos = { line: startLine + 1, ch: 0 };
+            // scrollIntoView takes an EditorRange, not a position.
+            editor.scrollIntoView({ from: pos, to: pos }, true);
+            editor.setCursor(pos);
         }, 150);
+    }
+
+    /**
+     * Resolve the link target after the '#' to a line range.
+     *
+     * The returned startLine/endLine are EXCLUSIVE boundaries: the editable region
+     * is startLine + 1 through endLine - 1. For a heading, startLine is the heading
+     * line itself (which is why it is hidden). For a block, startLine may be -1 when
+     * the block is the very first thing in the file.
+     */
+    findTargetBounds(content, target) {
+        if (target && target.startsWith('^')) {
+            return this.findBlockBounds(content, target.substring(1));
+        }
+        return this.findSectionBounds(content, target);
     }
 
     findSectionBounds(content, sectionName) {
@@ -367,7 +448,7 @@ class ViewportController {
         }
 
         if (startLine === -1) {
-            return { startLine: -1, endLine: -1, headerLevel: 0 };
+            return { found: false, startLine: -1, endLine: -1, headerLevel: 0, type: 'heading' };
         }
 
         let endLine = lines.length;
@@ -379,7 +460,101 @@ class ViewportController {
             }
         }
 
-        return { startLine, endLine, headerLevel };
+        return { found: true, startLine, endLine, headerLevel, type: 'heading' };
+    }
+
+    findBlockBounds(content, blockId) {
+        const notFound = { found: false, startLine: -1, endLine: -1, headerLevel: 0, type: 'block' };
+
+        // Obsidian block ids are alphanumerics and dashes only.
+        if (!/^[A-Za-z0-9-]+$/.test(blockId)) return notFound;
+
+        const lines = content.split('\n');
+        const fences = this.findFenceRanges(lines);
+        const markerRegex = new RegExp(`(^|\\s)\\^${this.escapeRegExp(blockId)}\\s*$`);
+
+        let markerLine = -1;
+        for (let i = 0; i < lines.length; i++) {
+            if (this.fenceAt(fences, i)) continue; // a '^id' inside a code block is not a block ref
+            if (markerRegex.test(lines[i])) {
+                markerLine = i;
+                break;
+            }
+        }
+
+        if (markerLine === -1) return notFound;
+
+        let firstLine = markerLine;
+        let lastLine = markerLine;
+
+        if (/^\s*\^/.test(lines[markerLine])) {
+            // The marker sits on its own line, so it labels the block just above it
+            // (how Obsidian tags tables, code blocks and callouts).
+            let i = markerLine - 1;
+            while (i >= 0 && lines[i].trim() === '') i--;
+            if (i < 0) return notFound;
+            firstLine = i;
+            lastLine = i;
+        }
+
+        const listMatch = lines[firstLine].match(/^(\s*)(?:[-*+]|\d+[.)])\s/);
+        const fence = this.fenceAt(fences, lastLine);
+
+        if (fence) {
+            // The block is a fenced code block — take the whole fence.
+            firstLine = fence.start;
+            lastLine = fence.end;
+        } else if (listMatch) {
+            // A list item owns its nested children.
+            const indent = listMatch[1].length;
+            for (let i = lastLine + 1; i < lines.length; i++) {
+                if (lines[i].trim() === '') break;
+                if (lines[i].match(/^\s*/)[0].length <= indent) break;
+                lastLine = i;
+            }
+        } else {
+            // Paragraph, table or callout — walk up to the start of the chunk.
+            while (firstLine > 0) {
+                const prev = lines[firstLine - 1];
+                if (prev.trim() === '') break;
+                if (/^#{1,6}\s/.test(prev)) break;
+                if (this.fenceAt(fences, firstLine - 1)) break;
+                firstLine--;
+            }
+        }
+
+        return {
+            found: true,
+            startLine: firstLine - 1,
+            endLine: lastLine + 1,
+            headerLevel: 0,
+            type: 'block'
+        };
+    }
+
+    findFenceRanges(lines) {
+        const ranges = [];
+        let open = null;
+
+        for (let i = 0; i < lines.length; i++) {
+            const match = lines[i].match(/^\s*(```+|~~~+)/);
+            if (!match) continue;
+
+            const marker = match[1];
+            if (!open) {
+                open = { start: i, char: marker[0], length: marker.length };
+            } else if (marker[0] === open.char && marker.length >= open.length) {
+                ranges.push({ start: open.start, end: i });
+                open = null;
+            }
+        }
+
+        if (open) ranges.push({ start: open.start, end: lines.length - 1 });
+        return ranges;
+    }
+
+    fenceAt(ranges, line) {
+        return ranges.find(r => line >= r.start && line <= r.end) || null;
     }
 
     escapeRegExp(string) {
