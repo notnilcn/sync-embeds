@@ -133,28 +133,98 @@ var require_viewport_controller = __commonJS({
       }
       updateViewportCSS(embedData, style) {
         const { sectionInfo, embedId } = embedData;
-        const { domStartLine, domEndLine } = this.toDomChildIndices(
+        const { domStartLine, domEndLine, exact } = this.toDomChildIndices(
           embedData,
           sectionInfo.startLine,
           sectionInfo.endLine
         );
+        const bottomRule = exact ? `
+            /* Hide everything AFTER the section */
+            [data-embed-content-id="${embedId}"] > :nth-child(n+${domEndLine + 1}) {
+                display: none !important;
+            }
+        ` : "";
         const css = `
             /* Hide everything BEFORE and INCLUDING the section header */
             [data-embed-content-id="${embedId}"] > :nth-child(-n+${domStartLine + 1}) {
                 display: none !important;
             }
-
-            /* Hide everything AFTER the section */
-            [data-embed-content-id="${embedId}"] > :nth-child(n+${domEndLine + 1}) {
-                display: none !important;
-            }
-
+${bottomRule}
             /* Catch-all to prevent overlapping text in collapsed line numbers */
             [data-embed-id="${embedId}"] .cm-gutterElement[style*="height: 0px"]:not([style*="visibility: hidden"]) {
                 display: none !important;
             }
         `;
         style.textContent = css;
+        return exact;
+      }
+      /**
+       * Re-measure and rewrite the viewport CSS until it stops clamping.
+       *
+       * The initial pass in applyViewportRestriction runs while the embed's editor is
+       * still detached from the page (loadEmbed only swaps the placeholder for the view
+       * afterwards), so CodeMirror has only laid out the top of the document. Any section
+       * below that window measures as "hide everything" and, left alone, stays blank once
+       * CM finally renders the rest.
+       *
+       * CodeMirror only lays out (and lets posAtDOM place) the lines near its viewport, so
+       * simply waiting isn't enough for a section far down the note — we have to scroll the
+       * editor to the section to force those lines to render, then measure again. The CSS
+       * from updateViewportCSS deliberately leaves the section visible while inexact, so the
+       * content stays scrollable here instead of collapsing to zero height.
+       *
+       * There are two distinct problems and they need different tools:
+       *
+       * 1. Initial convergence. The editor may not be painted/sized for many frames (e.g. a
+       *    leaf that isn't visible yet) and CodeMirror only lays out the lines near its
+       *    viewport, so a section far down the note isn't measurable until we scroll CM to
+       *    it. A short driver loop scrolls the section into view and measures until the
+       *    bottom boundary is really rendered (exact).
+       *
+       * 2. Staying correct afterwards. The nth-child rule is relative to CodeMirror's FIRST
+       *    RENDERED line, and CM's virtualized window does not always start at line 0 — so
+       *    the child index of a given source line shifts every time CM re-renders its window
+       *    (on scroll, on collapse when our own CSS hides lines, on resize). A rule frozen
+       *    against one transient render state then points at the wrong lines and the embed
+       *    goes blank. A MutationObserver on .cm-content's child list fires exactly when CM
+       *    swaps its rendered lines, so we re-measure and keep the rule aligned for the whole
+       *    life of the embed. (updateViewportCSS only rewrites a <style> outside .cm-content,
+       *    so this doesn't feed back into the observer.)
+       */
+      remeasureViewport(embedData) {
+        var _a;
+        const style = embedData.viewportStyle;
+        if (!embedData.viewportActive || !style || !style.isConnected) return;
+        const cm = (_a = embedData.editor) == null ? void 0 : _a.cm;
+        const component = embedData.component;
+        const sync = () => {
+          if (!embedData.viewportActive || !style.isConnected) return true;
+          return this.updateViewportCSS(embedData, style);
+        };
+        if ((cm == null ? void 0 : cm.contentDOM) && typeof MutationObserver !== "undefined") {
+          const mo = new MutationObserver(() => sync());
+          mo.observe(cm.contentDOM, { childList: true });
+          component == null ? void 0 : component.register(() => mo.disconnect());
+        }
+        if (cm && typeof ResizeObserver !== "undefined") {
+          const ro = new ResizeObserver(() => sync());
+          [cm.scrollDOM, cm.contentDOM].filter(Boolean).forEach((el) => ro.observe(el));
+          component == null ? void 0 : component.register(() => ro.disconnect());
+        }
+        if (sync()) return;
+        let ticks = 0;
+        const intervalId = window.setInterval(() => {
+          var _a2, _b, _c;
+          try {
+            const pos = { line: ((_b = (_a2 = embedData.sectionInfo) == null ? void 0 : _a2.startLine) != null ? _b : 0) + 1, ch: 0 };
+            (_c = embedData.editor) == null ? void 0 : _c.scrollIntoView({ from: pos, to: pos }, true);
+          } catch (e) {
+          }
+          if (sync() || ++ticks >= 60 || !embedData.viewportActive || !style.isConnected) {
+            window.clearInterval(intervalId);
+          }
+        }, 100);
+        component == null ? void 0 : component.register(() => window.clearInterval(intervalId));
       }
       /**
        * Translate source line boundaries into child indices inside .cm-content.
@@ -174,6 +244,7 @@ var require_viewport_controller = __commonJS({
           let domStartLine = -1;
           let domEndLine = children.length;
           let measured = false;
+          let endFound = false;
           for (let i = 0; i < children.length; i++) {
             let line;
             try {
@@ -183,15 +254,24 @@ var require_viewport_controller = __commonJS({
             }
             measured = true;
             if (line <= startLine) domStartLine = i;
-            if (line >= endLine && domEndLine === children.length) domEndLine = i;
+            if (line >= endLine && domEndLine === children.length) {
+              domEndLine = i;
+              endFound = true;
+            }
           }
-          if (measured) return { domStartLine, domEndLine };
+          if (measured) {
+            const lastDocLine = cm.state.doc.lines - 1;
+            const exact = endFound || endLine > lastDocLine;
+            return { domStartLine, domEndLine, exact };
+          }
         }
         const domOffset = this.getFrontmatterDomOffset(embedData.file);
         return {
           // -1 is legal: the region starts at the very first child, nothing to hide above.
           domStartLine: Math.max(-1, startLine - domOffset),
-          domEndLine: Math.max(0, endLine - domOffset)
+          domEndLine: Math.max(0, endLine - domOffset),
+          exact: true
+          // nothing better to measure against; don't loop forever
         };
       }
       /**
@@ -1002,6 +1082,9 @@ var require_embed_manager = __commonJS({
           placeholder.replaceWith(view.containerEl);
           embedContainer.removeClass("sync-embed-loading");
           ctx.addChild(component);
+          if (section && embedData.viewportActive) {
+            this.viewportController.remeasureViewport(embedData);
+          }
         } catch (error) {
           console.error("Sync Embeds: Error loading embed:", error);
           placeholder.setText(`Error: ${error.message}`);
@@ -1909,20 +1992,35 @@ module.exports = class SyncEmbedPlugin extends Plugin {
       const origLeafDesc = Object.getOwnPropertyDescriptor(workspace, "activeLeaf") || Object.getOwnPropertyDescriptor(Object.getPrototypeOf(workspace), "activeLeaf");
       if (origLeafDesc) {
         const plugin = this;
-        const origGet = origLeafDesc.get;
+        const isAccessor = !!(origLeafDesc.get || origLeafDesc.set);
+        let backingValue = isAccessor ? void 0 : origLeafDesc.value;
         Object.defineProperty(workspace, "activeLeaf", {
-          ...origLeafDesc,
           configurable: true,
+          enumerable: origLeafDesc.enumerable,
           get() {
             const focusedEmbed = plugin.getFocusedEmbed();
             if (focusedEmbed && focusedEmbed.leaf) {
               plugin.log("Returning embed leaf as active leaf");
               return focusedEmbed.leaf;
             }
-            return origGet ? origGet.call(this) : void 0;
+            if (isAccessor) return origLeafDesc.get ? origLeafDesc.get.call(this) : void 0;
+            return backingValue;
+          },
+          set(value) {
+            if (isAccessor) {
+              if (origLeafDesc.set) origLeafDesc.set.call(this, value);
+            } else {
+              backingValue = value;
+            }
           }
         });
-        this.uninstallers.push(() => Object.defineProperty(workspace, "activeLeaf", origLeafDesc));
+        this.uninstallers.push(() => {
+          if (isAccessor) {
+            Object.defineProperty(workspace, "activeLeaf", origLeafDesc);
+          } else {
+            Object.defineProperty(workspace, "activeLeaf", { ...origLeafDesc, value: backingValue });
+          }
+        });
       }
       this.log("Command interception setup complete");
     } catch (error) {

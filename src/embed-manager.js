@@ -392,6 +392,14 @@ class EmbedManager {
             embedContainer.removeClass('sync-embed-loading');
             ctx.addChild(component);
 
+            // The section viewport CSS was measured while this editor was still detached,
+            // so CodeMirror had only rendered the top of the document. Now that the view
+            // is on the page and CM can lay out every line, re-measure — otherwise any
+            // section below the initial render window stays hidden (renders blank).
+            if (section && embedData.viewportActive) {
+                this.viewportController.remeasureViewport(embedData);
+            }
+
         } catch (error) {
             console.error('Sync Embeds: Error loading embed:', error);
             placeholder.setText(`Error: ${error.message}`);

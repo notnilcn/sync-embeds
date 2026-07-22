@@ -63,7 +63,7 @@ class ViewportController {
 
     updateViewportCSS(embedData, style) {
         const { sectionInfo, embedId } = embedData;
-        const { domStartLine, domEndLine } = this.toDomChildIndices(
+        const { domStartLine, domEndLine, exact } = this.toDomChildIndices(
             embedData,
             sectionInfo.startLine,
             sectionInfo.endLine
@@ -72,17 +72,26 @@ class ViewportController {
         // These match every direct child, not just .cm-line, because Live Preview
         // renders code blocks and other block widgets as siblings of the lines —
         // matching only .cm-line would leave those widgets visible outside the region.
+        //
+        // The bottom rule is only emitted once the measurement is trustworthy (exact).
+        // While CodeMirror is still laying the document out, a clamped domEndLine points
+        // at the section itself, so hiding from there down would blank the whole embed —
+        // AND collapse the content to zero height, which stops it ever scrolling far
+        // enough to render the section. Skipping the bottom rule until exact keeps the
+        // section visible and the editor scrollable so remeasureViewport can converge.
+        const bottomRule = exact ? `
+            /* Hide everything AFTER the section */
+            [data-embed-content-id="${embedId}"] > :nth-child(n+${domEndLine + 1}) {
+                display: none !important;
+            }
+        ` : '';
+
         const css = `
             /* Hide everything BEFORE and INCLUDING the section header */
             [data-embed-content-id="${embedId}"] > :nth-child(-n+${domStartLine + 1}) {
                 display: none !important;
             }
-
-            /* Hide everything AFTER the section */
-            [data-embed-content-id="${embedId}"] > :nth-child(n+${domEndLine + 1}) {
-                display: none !important;
-            }
-
+${bottomRule}
             /* Catch-all to prevent overlapping text in collapsed line numbers */
             [data-embed-id="${embedId}"] .cm-gutterElement[style*="height: 0px"]:not([style*="visibility: hidden"]) {
                 display: none !important;
@@ -90,6 +99,80 @@ class ViewportController {
         `;
 
         style.textContent = css;
+        return exact;
+    }
+
+    /**
+     * Re-measure and rewrite the viewport CSS until it stops clamping.
+     *
+     * The initial pass in applyViewportRestriction runs while the embed's editor is
+     * still detached from the page (loadEmbed only swaps the placeholder for the view
+     * afterwards), so CodeMirror has only laid out the top of the document. Any section
+     * below that window measures as "hide everything" and, left alone, stays blank once
+     * CM finally renders the rest.
+     *
+     * CodeMirror only lays out (and lets posAtDOM place) the lines near its viewport, so
+     * simply waiting isn't enough for a section far down the note — we have to scroll the
+     * editor to the section to force those lines to render, then measure again. The CSS
+     * from updateViewportCSS deliberately leaves the section visible while inexact, so the
+     * content stays scrollable here instead of collapsing to zero height.
+     *
+     * There are two distinct problems and they need different tools:
+     *
+     * 1. Initial convergence. The editor may not be painted/sized for many frames (e.g. a
+     *    leaf that isn't visible yet) and CodeMirror only lays out the lines near its
+     *    viewport, so a section far down the note isn't measurable until we scroll CM to
+     *    it. A short driver loop scrolls the section into view and measures until the
+     *    bottom boundary is really rendered (exact).
+     *
+     * 2. Staying correct afterwards. The nth-child rule is relative to CodeMirror's FIRST
+     *    RENDERED line, and CM's virtualized window does not always start at line 0 — so
+     *    the child index of a given source line shifts every time CM re-renders its window
+     *    (on scroll, on collapse when our own CSS hides lines, on resize). A rule frozen
+     *    against one transient render state then points at the wrong lines and the embed
+     *    goes blank. A MutationObserver on .cm-content's child list fires exactly when CM
+     *    swaps its rendered lines, so we re-measure and keep the rule aligned for the whole
+     *    life of the embed. (updateViewportCSS only rewrites a <style> outside .cm-content,
+     *    so this doesn't feed back into the observer.)
+     */
+    remeasureViewport(embedData) {
+        const style = embedData.viewportStyle;
+        if (!embedData.viewportActive || !style || !style.isConnected) return;
+
+        const cm = embedData.editor?.cm;
+        const component = embedData.component;
+
+        const sync = () => {
+            if (!embedData.viewportActive || !style.isConnected) return true;
+            return this.updateViewportCSS(embedData, style);
+        };
+
+        // (2) Keep the rule aligned to CM's current render window for the embed's lifetime.
+        if (cm?.contentDOM && typeof MutationObserver !== 'undefined') {
+            const mo = new MutationObserver(() => sync());
+            mo.observe(cm.contentDOM, { childList: true });
+            component?.register(() => mo.disconnect());
+        }
+        if (cm && typeof ResizeObserver !== 'undefined') {
+            const ro = new ResizeObserver(() => sync());
+            [cm.scrollDOM, cm.contentDOM].filter(Boolean).forEach((el) => ro.observe(el));
+            component?.register(() => ro.disconnect());
+        }
+
+        // (1) Drive initial convergence. Stop the active nudging once exact — the observers
+        // above take over — but cap it so a genuinely-missing section can't spin forever.
+        if (sync()) return;
+        let ticks = 0;
+        const intervalId = window.setInterval(() => {
+            try {
+                const pos = { line: (embedData.sectionInfo?.startLine ?? 0) + 1, ch: 0 };
+                embedData.editor?.scrollIntoView({ from: pos, to: pos }, true);
+            } catch { /* editor not ready yet */ }
+            if (sync() || ++ticks >= 60 || !embedData.viewportActive || !style.isConnected) {
+                window.clearInterval(intervalId);
+            }
+        }, 100);
+        component?.register(() => window.clearInterval(intervalId));
     }
 
     /**
@@ -110,6 +193,7 @@ class ViewportController {
             let domStartLine = -1;
             let domEndLine = children.length;
             let measured = false;
+            let endFound = false;
 
             for (let i = 0; i < children.length; i++) {
                 let line;
@@ -120,10 +204,23 @@ class ViewportController {
                 }
                 measured = true;
                 if (line <= startLine) domStartLine = i;
-                if (line >= endLine && domEndLine === children.length) domEndLine = i;
+                if (line >= endLine && domEndLine === children.length) {
+                    domEndLine = i;
+                    endFound = true;
+                }
             }
 
-            if (measured) return { domStartLine, domEndLine };
+            if (measured) {
+                // The measurement is only trustworthy once the children CodeMirror has
+                // rendered actually span the section. When the editor is still detached
+                // (or the section sits below the initially-rendered window), CM has only
+                // laid out the top of the document, so the bottom boundary isn't present
+                // and domStartLine/domEndLine collapse to "hide everything". Report that
+                // as inexact so the caller can re-measure once CM has rendered further.
+                const lastDocLine = cm.state.doc.lines - 1;
+                const exact = endFound || endLine > lastDocLine;
+                return { domStartLine, domEndLine, exact };
+            }
         }
 
         // Fallback: assume one line per child, correcting only for folded frontmatter.
@@ -131,7 +228,8 @@ class ViewportController {
         return {
             // -1 is legal: the region starts at the very first child, nothing to hide above.
             domStartLine: Math.max(-1, startLine - domOffset),
-            domEndLine: Math.max(0, endLine - domOffset)
+            domEndLine: Math.max(0, endLine - domOffset),
+            exact: true // nothing better to measure against; don't loop forever
         };
     }
 

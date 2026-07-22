@@ -221,20 +221,43 @@ module.exports = class SyncEmbedPlugin extends Plugin {
                 || Object.getOwnPropertyDescriptor(Object.getPrototypeOf(workspace), 'activeLeaf');
             if (origLeafDesc) {
                 const plugin = this;
-                const origGet = origLeafDesc.get;
+                const isAccessor = !!(origLeafDesc.get || origLeafDesc.set);
+                // In current Obsidian `activeLeaf` is a plain writable data property on the
+                // workspace instance, not an accessor. A property descriptor may not carry
+                // both an accessor (get/set) and a data slot (value/writable), so we can't
+                // spread the original and bolt a getter on — that throws "Invalid property
+                // descriptor. Cannot both specify accessors and a value or writable
+                // attribute". Build a clean accessor instead, and when we're replacing a
+                // data property, back it with a local so Obsidian's own
+                // `workspace.activeLeaf = leaf` writes still take effect.
+                let backingValue = isAccessor ? undefined : origLeafDesc.value;
                 Object.defineProperty(workspace, 'activeLeaf', {
-                    ...origLeafDesc,
                     configurable: true,
+                    enumerable: origLeafDesc.enumerable,
                     get() {
                         const focusedEmbed = plugin.getFocusedEmbed();
                         if (focusedEmbed && focusedEmbed.leaf) {
                             plugin.log('Returning embed leaf as active leaf');
                             return focusedEmbed.leaf;
                         }
-                        return origGet ? origGet.call(this) : undefined;
+                        if (isAccessor) return origLeafDesc.get ? origLeafDesc.get.call(this) : undefined;
+                        return backingValue;
+                    },
+                    set(value) {
+                        if (isAccessor) {
+                            if (origLeafDesc.set) origLeafDesc.set.call(this, value);
+                        } else {
+                            backingValue = value;
+                        }
                     }
                 });
-                this.uninstallers.push(() => Object.defineProperty(workspace, 'activeLeaf', origLeafDesc));
+                this.uninstallers.push(() => {
+                    if (isAccessor) {
+                        Object.defineProperty(workspace, 'activeLeaf', origLeafDesc);
+                    } else {
+                        Object.defineProperty(workspace, 'activeLeaf', { ...origLeafDesc, value: backingValue });
+                    }
+                });
             }
             
             this.log('Command interception setup complete');
